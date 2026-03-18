@@ -1,17 +1,25 @@
 import 'dotenv/config';
 import express, { type Request, type Response } from 'express';
 import { getProvider, listProviders } from './providers/index.js';
-import { isRecord, parsePositiveInt } from './utils.js';
+import {
+  createQueuedSession,
+  ensureSessionStorage,
+  getSessionStorageDir,
+  loadSession,
+  markSessionCompleted,
+  markSessionFailed,
+  markSessionRunning,
+} from './sessionStore.js';
+import { isRecord, parsePositiveInt, type JsonRecord } from './utils.js';
 
 type QueryRequestBody = {
   provider?: unknown;
   prompt?: unknown;
   options?: unknown;
-  stream?: unknown;
 };
 
-const sendSse = (res: Response, data: unknown) => {
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+const log = (...parts: Array<string | number>) => {
+  console.log(`[${new Date().toISOString()}]`, ...parts);
 };
 
 const app = express();
@@ -21,7 +29,7 @@ app.use(express.json({ limit: process.env.REQUEST_JSON_LIMIT ?? '2mb' }));
 const port = parsePositiveInt(process.env.PORT) ?? 8787;
 const host = process.env.HOST?.trim() || '127.0.0.1';
 const httpAuthToken = process.env.HTTP_AUTH_TOKEN?.trim();
-const defaultProviderId = (process.env.AGENT_PROVIDER?.trim().toLowerCase() || 'claude');
+const defaultProviderId = process.env.AGENT_PROVIDER?.trim().toLowerCase() || 'claude';
 
 const requireAuth = (req: Request, res: Response): boolean => {
   if (!httpAuthToken) return true;
@@ -40,12 +48,66 @@ const requireAuth = (req: Request, res: Response): boolean => {
   return false;
 };
 
+const processSession = async (
+  sessionId: string,
+  providerId: string,
+  prompt: string,
+  options: JsonRecord,
+): Promise<void> => {
+  const provider = getProvider(providerId);
+  if (!provider) {
+    await markSessionFailed(sessionId, `Unsupported provider: ${providerId}`);
+    log(`[session:${sessionId}] failed unsupported provider=${providerId}`);
+    return;
+  }
+
+  const startedAt = Date.now();
+
+  try {
+    await markSessionRunning(sessionId);
+    log(`[session:${sessionId}] running provider=${provider.id} promptChars=${prompt.length}`);
+
+    const abortController = new AbortController();
+    const stderrEvents: string[] = [];
+    const messages: unknown[] = [];
+
+    const stream = provider.run({
+      prompt,
+      options,
+      abortController,
+      onStderr: (data) => {
+        stderrEvents.push(data);
+      },
+    });
+
+    for await (const message of stream) {
+      messages.push(message);
+    }
+
+    await markSessionCompleted(sessionId, { messages, stderr: stderrEvents });
+    log(
+      `[session:${sessionId}] completed provider=${provider.id} messages=${messages.length} durationMs=${Date.now() - startedAt}`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      await markSessionFailed(sessionId, message);
+    } catch (markError) {
+      const markMessage = markError instanceof Error ? markError.message : String(markError);
+      log(`[session:${sessionId}] failed to persist failure state err=${markMessage}`);
+    }
+
+    log(`[session:${sessionId}] failed provider=${providerId} err=${message}`);
+  }
+};
+
 app.get('/healthz', (_req, res) => {
   res.json({
     ok: true,
     service: 'coding-agent-http-server',
     defaultProvider: defaultProviderId,
     availableProviders: listProviders(),
+    sessionStorageDir: getSessionStorageDir(),
   });
 });
 
@@ -77,89 +139,52 @@ app.post('/v1/query', async (req: Request, res: Response) => {
     return;
   }
 
-  const stream = body.stream !== false;
-  const abortController = new AbortController();
-  const options = (body.options ?? {}) as Record<string, unknown>;
-
-  const stderrEvents: string[] = [];
-  const onStderr = (data: string) => {
-    if (stream) {
-      if (!res.writableEnded) {
-        sendSse(res, { type: 'stderr', data, provider: provider.id });
-      }
-      return;
-    }
-
-    stderrEvents.push(data);
-  };
-
-  req.on('aborted', () => {
-    abortController.abort();
+  const options = (body.options ?? {}) as JsonRecord;
+  const session = await createQueuedSession({
+    provider: provider.id,
+    prompt: body.prompt,
+    options,
   });
 
-  res.on('close', () => {
-    if (!res.writableEnded) {
-      abortController.abort();
-    }
+  log(
+    `[session:${session.sessionId}] queued provider=${provider.id} promptChars=${body.prompt.length}`,
+  );
+
+  res.status(202).json({
+    sessionId: session.sessionId,
+    provider: provider.id,
+    status: session.status,
+    queryUrl: `/v1/sessions/${session.sessionId}`,
   });
+
+  void processSession(session.sessionId, provider.id, body.prompt, options);
+});
+
+app.get('/v1/sessions/:sessionId', async (req: Request, res: Response) => {
+  if (!requireAuth(req, res)) return;
 
   try {
-    if (stream) {
-      res.status(200);
-      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('Connection', 'keep-alive');
-      if (typeof res.flushHeaders === 'function') {
-        res.flushHeaders();
-      }
-    }
-
-    const messages = provider.run({
-      prompt: body.prompt,
-      options,
-      abortController,
-      onStderr,
-    });
-
-    if (stream) {
-      for await (const message of messages) {
-        if (res.writableEnded) break;
-        sendSse(res, { provider: provider.id, message });
-      }
-
-      if (!res.writableEnded) {
-        sendSse(res, { type: 'proxy_done', provider: provider.id });
-        res.end();
-      }
+    const rawSessionId = req.params.sessionId;
+    const sessionId = Array.isArray(rawSessionId) ? rawSessionId[0] : rawSessionId;
+    if (!sessionId) {
+      res.status(400).json({ error: 'Missing session id.' });
       return;
     }
 
-    const collected: unknown[] = [];
-    for await (const message of messages) {
-      collected.push(message);
+    const session = await loadSession(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found.' });
+      return;
     }
 
-    res.status(200).json({
-      provider: provider.id,
-      messages: collected,
-      stderr: stderrEvents,
-    });
+    res.status(200).json(session);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-
-    if (stream) {
-      if (!res.writableEnded) {
-        sendSse(res, { type: 'proxy_error', provider: provider.id, error: message });
-        res.end();
-      }
-      return;
-    }
-
-    res.status(500).json({ error: message, provider: provider.id });
+    res.status(400).json({ error: message });
   }
 });
 
-try {
+const start = async () => {
   const defaultProvider = getProvider(defaultProviderId);
   if (!defaultProvider) {
     throw new Error(
@@ -168,11 +193,16 @@ try {
   }
 
   defaultProvider.assertAvailable();
+  await ensureSessionStorage();
+
   app.listen(port, host, () => {
-    console.log(`Agent SDK HTTP server listening at http://${host}:${port}`);
+    log(`Agent SDK HTTP server listening at http://${host}:${port}`);
+    log(`Session state dir: ${getSessionStorageDir()}`);
   });
-} catch (error) {
+};
+
+void start().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`Startup failed: ${message}`);
   process.exit(1);
-}
+});
