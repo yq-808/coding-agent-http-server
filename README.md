@@ -63,11 +63,9 @@ cp -R /Users/yongqiwu/code/coding-agent-http-server/skills/coding-agent-http-ser
   <workspace>/skills/coding-agent-http-server
 ```
 
-The skill includes helper scripts:
+No extra scripts are required. Use the curl examples in:
 
-- `scripts/submit.sh`
-- `scripts/get-session.sh`
-- `scripts/wait-session.sh`
+- `skills/coding-agent-http-server/SKILL.md`
 
 ## API (Pure Async)
 
