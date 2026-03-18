@@ -1,3 +1,7 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
 export type JsonRecord = Record<string, unknown>;
 
 export const isRecord = (value: unknown): value is JsonRecord =>
@@ -26,4 +30,26 @@ export const coerceEnv = (value: unknown): Record<string, string | undefined> =>
     if (typeof maybeValue === 'string') out[key] = maybeValue;
   }
   return out;
+};
+
+export const expandHomePath = (value: string): string => {
+  const trimmed = value.trim();
+  if (trimmed === '~') {
+    return os.homedir();
+  }
+
+  if (trimmed.startsWith('~/')) {
+    return path.join(os.homedir(), trimmed.slice(2));
+  }
+
+  return trimmed;
+};
+
+export const isExistingDirectory = async (directoryPath: string): Promise<boolean> => {
+  try {
+    const stats = await fs.stat(directoryPath);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
 };

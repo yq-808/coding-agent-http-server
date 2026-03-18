@@ -10,7 +10,13 @@ import {
   markSessionFailed,
   markSessionRunning,
 } from './sessionStore.js';
-import { isRecord, parsePositiveInt, type JsonRecord } from './utils.js';
+import {
+  expandHomePath,
+  isExistingDirectory,
+  isRecord,
+  parsePositiveInt,
+  type JsonRecord,
+} from './utils.js';
 
 type QueryRequestBody = {
   provider?: unknown;
@@ -46,6 +52,29 @@ const requireAuth = (req: Request, res: Response): boolean => {
     error: 'Unauthorized. Set Authorization: Bearer <token> to call this server.',
   });
   return false;
+};
+
+const normalizeQueryOptions = async (
+  rawOptions: JsonRecord,
+): Promise<{ options: JsonRecord; error?: string }> => {
+  const options: JsonRecord = { ...rawOptions };
+  const cwdValue = options.cwd;
+
+  if (cwdValue === undefined) {
+    return { options };
+  }
+
+  if (typeof cwdValue !== 'string' || !cwdValue.trim()) {
+    return { options, error: '`options.cwd` must be a non-empty string when provided.' };
+  }
+
+  const expandedCwd = expandHomePath(cwdValue);
+  if (!(await isExistingDirectory(expandedCwd))) {
+    return { options, error: '`options.cwd` does not exist or is not a directory.' };
+  }
+
+  options.cwd = expandedCwd;
+  return { options };
 };
 
 const processSession = async (
@@ -139,7 +168,14 @@ app.post('/v1/query', async (req: Request, res: Response) => {
     return;
   }
 
-  const options = (body.options ?? {}) as JsonRecord;
+  const rawOptions = (body.options ?? {}) as JsonRecord;
+  const normalizedOptions = await normalizeQueryOptions(rawOptions);
+  if (normalizedOptions.error) {
+    res.status(400).json({ error: normalizedOptions.error });
+    return;
+  }
+
+  const options = normalizedOptions.options;
   const session = await createQueuedSession({
     provider: provider.id,
     prompt: body.prompt,
