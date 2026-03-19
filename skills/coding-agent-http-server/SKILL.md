@@ -42,7 +42,10 @@ curl -sS -X POST "$BASE_URL/v1/query" \
   -d '{
     "provider": "claude",
     "prompt": "Summarize current git status in 3 bullets.",
-    "options": { "maxTurns": 100 }
+    "options": {
+      "cwd": "/absolute/path/to/workspace",
+      "maxTurns": 100
+    }
   }'
 ```
 
@@ -100,4 +103,6 @@ done
 ## Notes for OpenClaw agents
 
 - Keep prompts concise and task-focused for faster async turnaround.
+- Omit `options.cwd` only for read-only tasks (server defaults to HOME read-only mode).
+- For file writes/edits, always pass `options.cwd` as an absolute workspace path.
 - If `status=failed`, surface the `error` field and stop.

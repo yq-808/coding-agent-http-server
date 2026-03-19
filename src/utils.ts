@@ -45,11 +45,20 @@ export const expandHomePath = (value: string): string => {
   return trimmed;
 };
 
-export const isExistingDirectory = async (directoryPath: string): Promise<boolean> => {
+export const resolveExistingDirectory = async (directoryPath: string): Promise<string | undefined> => {
   try {
-    const stats = await fs.stat(directoryPath);
-    return stats.isDirectory();
+    const expanded = expandHomePath(directoryPath);
+    const absolute = path.resolve(expanded);
+    const real = await fs.realpath(absolute);
+    const stats = await fs.stat(real);
+    if (!stats.isDirectory()) return undefined;
+    return real;
   } catch {
-    return false;
+    return undefined;
   }
+};
+
+export const isPathInsideDirectory = (targetPath: string, directoryPath: string): boolean => {
+  const relative = path.relative(directoryPath, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 };

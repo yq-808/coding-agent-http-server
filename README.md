@@ -18,6 +18,10 @@ npm install
 For `claude`, make sure Claude CLI is installed and authenticated (`claude login`).
 This server defaults `AGENT_DEFAULT_SETTING_SOURCES=user` so Claude user settings (for example custom auth headers) are loaded.
 Default model is `claude-opus-4-6[1m]` (Opus with 1M context), configurable via `AGENT_DEFAULT_MODEL`.
+Default permission mode is `bypassPermissions` (configurable via `AGENT_DEFAULT_PERMISSION_MODE`).
+When permission mode is `bypassPermissions`, server auto-sets `allowDangerouslySkipPermissions=true` unless caller already provided it.
+If caller omits `options.cwd`, server defaults to `HOME` in read-only mode.
+If caller provides `options.cwd`, server enforces write scope to that `cwd` only (reads outside `cwd` are allowed).
 
 ## Run
 
@@ -110,6 +114,8 @@ curl http://127.0.0.1:8787/v1/sessions/<sessionId>
 - `status=queued|running|completed|failed`
 - `completed` includes `result.messages` and `result.stderr`
 - `failed` includes `error`
+- If `options.cwd` is omitted, session runs in `HOME` with read-only policy.
+- If `options.cwd` is set, writes are restricted to `options.cwd`; reads outside `cwd` are allowed.
 
 If `HTTP_AUTH_TOKEN` is set, include:
 

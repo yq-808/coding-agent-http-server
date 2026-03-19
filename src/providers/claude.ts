@@ -1,7 +1,84 @@
 import { spawnSync } from 'node:child_process';
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import path from 'node:path';
+import {
+  query,
+  type CanUseTool,
+  type Options,
+  type PermissionMode,
+  type PermissionResult,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { AgentProvider, ProviderRunRequest } from './provider.js';
-import { coerceEnv, parseCsv, parsePositiveInt } from '../utils.js';
+import {
+  coerceEnv,
+  expandHomePath,
+  isPathInsideDirectory,
+  isRecord,
+  parseCsv,
+  parsePositiveInt,
+} from '../utils.js';
+
+const VALID_PERMISSION_MODES = new Set<PermissionMode>([
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'dontAsk',
+]);
+
+const WRITE_TOOL_PATH_FIELDS: Record<string, string> = {
+  Edit: 'file_path',
+  MultiEdit: 'file_path',
+  Write: 'file_path',
+  NotebookEdit: 'notebook_path',
+};
+
+const normalizeWritableRoots = (value: unknown, workspaceCwd: string): string[] => {
+  if (!Array.isArray(value)) return [workspaceCwd];
+  return value
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => path.resolve(expandHomePath(item)));
+};
+
+const createWorkspaceWriteGuard = (workspaceCwd: string, writableRoots: string[]): CanUseTool => {
+  const normalizedWorkspaceCwd = path.resolve(workspaceCwd);
+
+  return async (toolName, input, meta): Promise<PermissionResult> => {
+    const pathField = WRITE_TOOL_PATH_FIELDS[toolName];
+    if (!pathField) {
+      return { behavior: 'allow', toolUseID: meta.toolUseID };
+    }
+
+    if (writableRoots.length === 0) {
+      return {
+        behavior: 'deny',
+        message: 'This session is read-only. Provide options.cwd to enable writes in that workspace.',
+        toolUseID: meta.toolUseID,
+      };
+    }
+
+    const rawPath = input[pathField];
+    if (typeof rawPath !== 'string' || !rawPath.trim()) {
+      return {
+        behavior: 'deny',
+        message: `Missing required path field '${pathField}' for tool ${toolName}.`,
+        toolUseID: meta.toolUseID,
+      };
+    }
+
+    const expandedPath = expandHomePath(rawPath);
+    const normalizedTargetPath = path.resolve(normalizedWorkspaceCwd, expandedPath);
+    const writable = writableRoots.some((root) => isPathInsideDirectory(normalizedTargetPath, root));
+    if (!writable) {
+      return {
+        behavior: 'deny',
+        message: `Write access is restricted to: ${writableRoots.join(', ')}`,
+        toolUseID: meta.toolUseID,
+      };
+    }
+
+    return { behavior: 'allow', toolUseID: meta.toolUseID };
+  };
+};
 
 const buildBaseEnv = (): Record<string, string | undefined> => {
   const entries = Object.entries(process.env).filter(
@@ -41,6 +118,11 @@ export class ClaudeProvider implements AgentProvider {
     const defaultMaxThinkingTokens = parsePositiveInt(process.env.AGENT_MAX_THINKING_TOKENS);
     const defaultAllowedTools = parseCsv(process.env.AGENT_DEFAULT_ALLOWED_TOOLS);
     const defaultToolsPreset = process.env.AGENT_DEFAULT_TOOLS_PRESET?.trim() || 'claude_code';
+    const defaultPermissionModeEnv = process.env.AGENT_DEFAULT_PERMISSION_MODE?.trim();
+    const defaultPermissionMode: PermissionMode =
+      defaultPermissionModeEnv && VALID_PERMISSION_MODES.has(defaultPermissionModeEnv as PermissionMode)
+        ? (defaultPermissionModeEnv as PermissionMode)
+        : 'bypassPermissions';
     const validSettingSources = new Set(['user', 'project', 'local']);
     const defaultSettingSources =
       parseCsv(process.env.AGENT_DEFAULT_SETTING_SOURCES)
@@ -76,6 +158,41 @@ export class ClaudeProvider implements AgentProvider {
 
     if (!('settingSources' in requestOptions) && defaultSettingSources.length > 0) {
       options.settingSources = defaultSettingSources as Array<'user' | 'project' | 'local'>;
+    }
+
+    if (!('permissionMode' in requestOptions)) {
+      options.permissionMode = defaultPermissionMode;
+    }
+
+    if (
+      options.permissionMode === 'bypassPermissions' &&
+      !('allowDangerouslySkipPermissions' in requestOptions)
+    ) {
+      options.allowDangerouslySkipPermissions = true;
+    }
+
+    if (typeof options.cwd === 'string' && options.cwd.trim()) {
+      const writableRoots =
+        isRecord(options.sandbox) && isRecord(options.sandbox.filesystem)
+          ? normalizeWritableRoots(options.sandbox.filesystem.allowWrite, options.cwd)
+          : [path.resolve(options.cwd)];
+
+      const workspaceWriteGuard = createWorkspaceWriteGuard(options.cwd, writableRoots);
+      const upstreamCanUseTool =
+        typeof requestOptions.canUseTool === 'function' ? requestOptions.canUseTool : undefined;
+
+      options.canUseTool = async (toolName, input, meta): Promise<PermissionResult> => {
+        const guardResult = await workspaceWriteGuard(toolName, input, meta);
+        if (guardResult.behavior === 'deny') {
+          return guardResult;
+        }
+
+        if (upstreamCanUseTool) {
+          return upstreamCanUseTool(toolName, input, meta);
+        }
+
+        return { behavior: 'allow', toolUseID: meta.toolUseID };
+      };
     }
 
     return query({ prompt: request.prompt, options });

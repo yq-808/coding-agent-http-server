@@ -37,6 +37,7 @@ const SESSION_ID_PATTERN =
 
 const sessionRootDir = process.env.SESSION_STATE_DIR?.trim() || DEFAULT_SESSION_ROOT;
 const sessionsDir = path.join(sessionRootDir, 'sessions');
+const logsDir = path.join(sessionRootDir, 'logs');
 
 const ensureValidSessionId = (sessionId: string) => {
   if (!SESSION_ID_PATTERN.test(sessionId)) {
@@ -47,6 +48,11 @@ const ensureValidSessionId = (sessionId: string) => {
 const getSessionFilePath = (sessionId: string): string => {
   ensureValidSessionId(sessionId);
   return path.join(sessionsDir, `${sessionId}.json`);
+};
+
+const getSessionLogFilePath = (sessionId: string): string => {
+  ensureValidSessionId(sessionId);
+  return path.join(logsDir, `${sessionId}.log`);
 };
 
 const writeFileAtomic = async (filePath: string, content: string) => {
@@ -77,9 +83,35 @@ const mutateSession = async (
 
 export const ensureSessionStorage = async () => {
   await fs.mkdir(sessionsDir, { recursive: true });
+  await fs.mkdir(logsDir, { recursive: true });
 };
 
 export const getSessionStorageDir = (): string => sessionRootDir;
+
+export const appendSessionLog = async (sessionId: string, message: string): Promise<void> => {
+  const filePath = getSessionLogFilePath(sessionId);
+  const line = message.replace(/\r?\n/g, ' ').trim();
+  if (!line) return;
+  await fs.appendFile(filePath, `[${new Date().toISOString()}] ${line}\n`, 'utf8');
+};
+
+export const readSessionLogs = async (sessionId: string): Promise<string[]> => {
+  const filePath = getSessionLogFilePath(sessionId);
+
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    return raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  }
+};
 
 export const createQueuedSession = async (input: CreateSessionInput): Promise<SessionState> => {
   const now = new Date().toISOString();
