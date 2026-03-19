@@ -12,7 +12,6 @@ import {
   coerceEnv,
   expandHomePath,
   isPathInsideDirectory,
-  isRecord,
   parseCsv,
   parsePositiveInt,
 } from '../utils.js';
@@ -30,13 +29,6 @@ const WRITE_TOOL_PATH_FIELDS: Record<string, string> = {
   MultiEdit: 'file_path',
   Write: 'file_path',
   NotebookEdit: 'notebook_path',
-};
-
-const normalizeWritableRoots = (value: unknown, workspaceCwd: string): string[] => {
-  if (!Array.isArray(value)) return [workspaceCwd];
-  return value
-    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    .map((item) => path.resolve(expandHomePath(item)));
 };
 
 const createWorkspaceWriteGuard = (workspaceCwd: string, writableRoots: string[]): CanUseTool => {
@@ -172,10 +164,7 @@ export class ClaudeProvider implements AgentProvider {
     }
 
     if (typeof options.cwd === 'string' && options.cwd.trim()) {
-      const writableRoots =
-        isRecord(options.sandbox) && isRecord(options.sandbox.filesystem)
-          ? normalizeWritableRoots(options.sandbox.filesystem.allowWrite, options.cwd)
-          : [path.resolve(options.cwd)];
+      const writableRoots = request.writableRoots.map((root) => path.resolve(expandHomePath(root)));
 
       const workspaceWriteGuard = createWorkspaceWriteGuard(options.cwd, writableRoots);
       const upstreamCanUseTool =

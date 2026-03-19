@@ -3,6 +3,7 @@ import type { JsonRecord } from '../utils.js';
 export type ProviderRunRequest = {
   prompt: string;
   options: JsonRecord;
+  writableRoots: string[];
   abortController: AbortController;
   onStderr: (data: string) => void;
 };

@@ -60,27 +60,15 @@ const requireAuth = (req: Request, res: Response): boolean => {
 const applyWorkspacePolicy = (
   rawOptions: JsonRecord,
   workspaceCwd: string,
-  writableRoots: string[],
 ): JsonRecord => {
   const options: JsonRecord = { ...rawOptions, cwd: workspaceCwd };
-  const sandbox = isRecord(options.sandbox) ? { ...options.sandbox } : {};
-  const filesystem = isRecord(sandbox.filesystem) ? { ...sandbox.filesystem } : {};
-  filesystem.allowWrite = writableRoots;
-
-  sandbox.enabled = true;
-  sandbox.allowUnsandboxedCommands = false;
-  if (!('autoAllowBashIfSandboxed' in sandbox)) {
-    sandbox.autoAllowBashIfSandboxed = true;
-  }
-  sandbox.filesystem = filesystem;
-
-  options.sandbox = sandbox;
+  delete options.sandbox;
   return options;
 };
 
 const normalizeQueryOptions = async (
   rawOptions: JsonRecord,
-): Promise<{ options: JsonRecord; error?: string }> => {
+): Promise<{ options: JsonRecord; writableRoots: string[]; error?: string }> => {
   const options: JsonRecord = { ...rawOptions };
   const cwdValue = options.cwd;
 
@@ -89,25 +77,27 @@ const normalizeQueryOptions = async (
     if (!normalizedHome) {
       return {
         options,
+        writableRoots: [],
         error: `Default HOME directory is not available: ${fallbackReadOnlyCwd}`,
       };
     }
 
     return {
-      options: applyWorkspacePolicy(options, normalizedHome, []),
+      options: applyWorkspacePolicy(options, normalizedHome),
+      writableRoots: [],
     };
   }
 
   if (typeof cwdValue !== 'string' || !cwdValue.trim()) {
-    return { options, error: '`options.cwd` must be a non-empty string when provided.' };
+    return { options, writableRoots: [], error: '`options.cwd` must be a non-empty string when provided.' };
   }
 
   const normalizedCwd = await resolveExistingDirectory(cwdValue);
   if (!normalizedCwd) {
-    return { options, error: '`options.cwd` does not exist or is not a directory.' };
+    return { options, writableRoots: [], error: '`options.cwd` does not exist or is not a directory.' };
   }
 
-  return { options: applyWorkspacePolicy(options, normalizedCwd, [normalizedCwd]) };
+  return { options: applyWorkspacePolicy(options, normalizedCwd), writableRoots: [normalizedCwd] };
 };
 
 const stringifyRecordValue = (value: unknown): string => {
@@ -210,6 +200,7 @@ const processSession = async (
   providerId: string,
   prompt: string,
   options: JsonRecord,
+  writableRoots: string[],
 ): Promise<void> => {
   let logWriteQueue: Promise<void> = Promise.resolve();
   const enqueueSessionLog = (line: string) => {
@@ -244,6 +235,7 @@ const processSession = async (
     const stream = provider.run({
       prompt,
       options,
+      writableRoots,
       abortController,
       onStderr: (data) => {
         stderrEvents.push(data);
@@ -297,7 +289,6 @@ app.get('/healthz', (_req, res) => {
       defaultWriteScope: 'read-only',
       writeScopeWhenCwdProvided: 'cwd-only',
       readOutsideCwd: true,
-      sandboxEnabled: true,
     },
     sessionStorageDir: getSessionStorageDir(),
   });
@@ -339,6 +330,7 @@ app.post('/v1/query', async (req: Request, res: Response) => {
   }
 
   const options = normalizedOptions.options;
+  const writableRoots = normalizedOptions.writableRoots;
   const session = await createQueuedSession({
     provider: provider.id,
     prompt: body.prompt,
@@ -363,7 +355,7 @@ app.post('/v1/query', async (req: Request, res: Response) => {
     queryUrl: `/v1/sessions/${session.sessionId}`,
   });
 
-  void processSession(session.sessionId, provider.id, body.prompt, options);
+  void processSession(session.sessionId, provider.id, body.prompt, options, writableRoots);
 });
 
 app.get('/v1/sessions/:sessionId', async (req: Request, res: Response) => {
