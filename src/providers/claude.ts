@@ -106,7 +106,7 @@ export class ClaudeProvider implements AgentProvider {
 
     const requestOptions = request.options as Partial<Options>;
     const defaultCwd = process.env.AGENT_DEFAULT_CWD?.trim() || process.cwd();
-    const defaultModel = process.env.AGENT_DEFAULT_MODEL?.trim() || 'claude-opus-4-6[1m]';
+    const defaultModel = process.env.AGENT_DEFAULT_MODEL?.trim();
     const defaultMaxThinkingTokens = parsePositiveInt(process.env.AGENT_MAX_THINKING_TOKENS);
     const defaultAllowedTools = parseCsv(process.env.AGENT_DEFAULT_ALLOWED_TOOLS);
     const defaultToolsPreset = process.env.AGENT_DEFAULT_TOOLS_PRESET?.trim() || 'claude_code';

@@ -17,7 +17,7 @@ npm install
 
 For `claude`, make sure Claude CLI is installed and authenticated (`claude login`).
 This server defaults `AGENT_DEFAULT_SETTING_SOURCES=user` so Claude user settings (for example custom auth headers) are loaded.
-Default model is `claude-opus-4-6[1m]` (Opus with 1M context), configurable via `AGENT_DEFAULT_MODEL`.
+Default model is controlled by `AGENT_DEFAULT_MODEL` (example: `claude-sonnet-4-6[1m]`); there is no hardcoded model fallback.
 Default permission mode is `bypassPermissions` (configurable via `AGENT_DEFAULT_PERMISSION_MODE`).
 When permission mode is `bypassPermissions`, server auto-sets `allowDangerouslySkipPermissions=true` unless caller already provided it.
 If caller omits `options.cwd`, server defaults to `HOME` in read-only mode.
